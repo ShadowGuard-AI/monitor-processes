@@ -50,23 +50,52 @@ def check_process_activity(args):
      Checks for high resource usage in system processes based on provided arguments.
      """
      logging.info("Starting process monitoring...")
+     seen_pids = set()
+     cpu_alerted_pids = set()
+     mem_alerted_pids = set()
      try:
         while True:
+            current_pids = set()
             for process in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
                  try:
                     if args.process_name and process.info['name'] != args.process_name:
                         continue
+                    pid = process.info['pid']
+                    current_pids.add(pid)
+                    # The first cpu_percent reading for a process is a
+                    # priming reading with no meaning, so CPU alerting for
+                    # a newly seen process starts from its next cycle.
+                    # Memory alerting has no such limit.
+                    newly_seen = pid not in seen_pids
+                    if newly_seen:
+                        seen_pids.add(pid)
                     cpu_usage = process.info['cpu_percent']
                     mem_usage = process.info['memory_percent']
-                    
-                    if cpu_usage > args.cpu_threshold:
-                         logging.warning(f"Process {process.info['name']} (PID: {process.info['pid']}) CPU usage: {cpu_usage:.2f}% exceeds threshold: {args.cpu_threshold:.2f}%")
-                    
+
+                    if not newly_seen:
+                        if cpu_usage > args.cpu_threshold:
+                            if pid not in cpu_alerted_pids:
+                                cpu_alerted_pids.add(pid)
+                                logging.warning(f"Process {process.info['name']} (PID: {pid}) CPU usage: {cpu_usage:.2f}% exceeds threshold: {args.cpu_threshold:.2f}%")
+                        else:
+                            cpu_alerted_pids.discard(pid)
+
                     if mem_usage > args.mem_threshold:
-                        logging.warning(f"Process {process.info['name']} (PID: {process.info['pid']}) Memory usage: {mem_usage:.2f}% exceeds threshold: {args.mem_threshold:.2f}%")
-                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
-                     logging.error(f"Error accessing process info. {e}")
+                        if pid not in mem_alerted_pids:
+                            mem_alerted_pids.add(pid)
+                            logging.warning(f"Process {process.info['name']} (PID: {pid}) Memory usage: {mem_usage:.2f}% exceeds threshold: {args.mem_threshold:.2f}%")
+                    else:
+                        mem_alerted_pids.discard(pid)
+                 except psutil.NoSuchProcess:
+                     continue # Process vanished; skip silently
+                 except psutil.AccessDenied as e:
+                     logging.debug(f"Access denied reading process info. {e}")
                      continue # Skip to next process on error
+                 except psutil.ZombieProcess:
+                     continue # Skip silently
+            seen_pids.intersection_update(current_pids)
+            cpu_alerted_pids.intersection_update(current_pids)
+            mem_alerted_pids.intersection_update(current_pids)
             time.sleep(args.interval)
      except KeyboardInterrupt:
         logging.info("Process monitoring stopped by user.")
