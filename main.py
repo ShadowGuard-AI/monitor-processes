@@ -58,6 +58,12 @@ def check_process_activity(args):
             current_pids = set()
             for process in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
                  try:
+                    # The name filter is an exact equality against the name
+                    # psutil reports, which is the short kernel name on Linux,
+                    # cut at fifteen characters, and usually the bare executable
+                    # name without its extension on Windows. Asking for the full
+                    # product name, or the name with .exe on it, matches nothing
+                    # and monitors silence.
                     if args.process_name and process.info['name'] != args.process_name:
                         continue
                     pid = process.info['pid']
@@ -73,6 +79,13 @@ def check_process_activity(args):
                     mem_usage = process.info['memory_percent']
 
                     if not newly_seen:
+                        # Like its sibling monitor, this compares a figure that can
+                        # run to several hundred percent for a multithreaded process
+                        # against a threshold my own validation refuses to set above
+                        # 100. The memory figure beside it is a share of total RAM
+                        # and lives on the scale the validation assumes; the two
+                        # thresholds sit in one argument list pretending to be one
+                        # kind of number.
                         if cpu_usage > args.cpu_threshold:
                             if pid not in cpu_alerted_pids:
                                 cpu_alerted_pids.add(pid)
@@ -99,6 +112,11 @@ def check_process_activity(args):
             time.sleep(args.interval)
      except KeyboardInterrupt:
         logging.info("Process monitoring stopped by user.")
+     # A failure anywhere in the cycle lands here, gets one log
+     # line, and ends the monitor with a normal exit: the process
+     # that was supposed to watch the machine is gone, and
+     # nothing about its ending looks like a failure from the
+     # outside.
      except Exception as e:
          logging.error(f"An error occurred: {e}")
 
@@ -119,6 +137,11 @@ def main():
     args = parser.parse_args()
 
     # Setup log file handler
+    # The handler is created before the arguments are validated,
+    # so a run that is about to be rejected for a bad threshold
+    # still creates or opens the log file on its way out. Small,
+    # and the kind of side effect that confuses an operator
+    # wondering where an empty log came from.
     file_handler = logging.FileHandler(args.log_file)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(file_handler)
